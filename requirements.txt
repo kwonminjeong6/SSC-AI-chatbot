@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+qdrant-client
+sentence-transformers
+torch
+pymupdf
+requests
+python-dotenv
+pydantic
+langchain
+langchain-community
+langchain-qdrant
+FlagEmbedding
