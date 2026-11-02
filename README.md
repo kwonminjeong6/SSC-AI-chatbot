@@ -1,4 +1,4 @@
-# 대학 규정 안내 RAG 챗봇 (ChatSSC)
+# ChatSSC : 수원과학대 AI 챗봇 안내
 
 PDF 규정 문서를 Qdrant Cloud에 적재하고, 질문에 맞는 근거를 검색해 OpenRouter LLM이 답변하는 챗봇입니다.
 
