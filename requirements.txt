@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
+python-dotenv>=1.0
+qdrant-client>=1.10        # query_points / collection_exists 사용
+sentence-transformers>=2.7
+pymupdf>=1.23.0            # page.find_tables() 사용
+openai>=1.30
+pytest>=8.0                # 단위 테스트

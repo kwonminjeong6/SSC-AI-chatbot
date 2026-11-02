@@ -1,0 +1,96 @@
+"""검색 → 프롬프트 구성 → LLM 답변 생성."""
+import logging
+from datetime import date
+from functools import lru_cache
+from typing import Optional
+
+from fastapi.concurrency import run_in_threadpool
+from openai import AsyncOpenAI
+
+from app import config, embedding
+from app.qdrant import search_docs
+
+logger = logging.getLogger(__name__)
+
+NO_ANSWER = "현재 등록된 대학 공식 자료에서는 해당 내용을 확인할 수 없습니다."
+ERROR_ANSWER = "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
+SYSTEM_PROMPT = "너는 대학 규정 및 학사 정보 안내 챗봇이다. 제공된 문서만을 근거로, 주어진 규칙을 엄격히 지켜 답변하라."
+CONTENT_TYPE_LABEL = {"article": "조문", "table": "표", "revision": "개정 대비표"}
+
+RULES = f"""다음 규칙을 반드시 지키십시오:
+1. 질문과 문서의 표현이 달라도 의미가 같은 내용을 찾아 답변하십시오.
+2. 표·수치 데이터는 행과 열을 정확히 대조하십시오. 표 제목의 연도(예: 2027학년도)가 질문과 일치하는 수치만 사용하고, 다른 연도의 수치를 섞지 마십시오.
+3. '[개정 후 ...]'로 표시된 내용이 현재 시행 중인 규정입니다.
+4. 문서에 없는 내용은 추측하거나 만들어내지 마십시오.
+5. 문서에서 질문의 근거를 전혀 찾을 수 없을 때만 정확히 다음 문장으로 답하십시오: "{NO_ANSWER}"
+6. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오."""
+
+
+@lru_cache(maxsize=1)
+def get_llm() -> AsyncOpenAI:
+    if not config.OPENROUTER_API_KEY:
+        raise RuntimeError("OPENROUTER_API_KEY 환경변수가 설정되지 않았습니다.")
+    return AsyncOpenAI(
+        base_url=config.OPENROUTER_BASE_URL, api_key=config.OPENROUTER_API_KEY, timeout=config.LLM_TIMEOUT
+    )
+
+
+def retrieve(query: str, category: Optional[str] = None) -> list[dict]:
+    """질문을 임베딩해 현행 문서 청크를 검색합니다(동기 함수, 스레드풀에서 호출)."""
+    return search_docs(embedding.encode(query), category=category)
+
+
+def format_context(docs: list[dict]) -> str:
+    blocks = []
+    for i, doc in enumerate(docs, 1):
+        meta = [
+            f"문서명: {doc.get('document_name', '알 수 없음')}",
+            f"페이지: {doc.get('page') or '-'}",
+            f"유형: {CONTENT_TYPE_LABEL.get(doc.get('content_type'), '본문')}",
+        ]
+        if doc.get("article"):
+            meta.append(f"조항: {doc['article']}")
+        blocks.append(f"[검색 문서 {i}]\n" + "\n".join(meta) + f"\n내용:\n{doc.get('text', '')}")
+    return "\n\n".join(blocks)
+
+
+def create_prompt(question: str, docs: list[dict]) -> str:
+    return (
+        "아래 대학 공식 문서만을 근거로 사용자의 질문에 답변하십시오.\n"
+        f"오늘 날짜: {date.today().isoformat()}\n\n"
+        f"{RULES}\n\n[대학 공식 문서 검색 결과]\n\n{format_context(docs)}\n\n"
+        f"[사용자 질문]\n{question}\n\n[답변]\n"
+    )
+
+
+def format_sources(docs: list[dict]) -> list[str]:
+    """'문서명 p.페이지' 형태로, 등장 순서를 유지하며 중복을 제거합니다."""
+    labels = (f"{d.get('document_name', '출처 미상')} p.{d.get('page') or '-'}" for d in docs)
+    return list(dict.fromkeys(labels))
+
+
+async def generate_rag_answer(query: str, category: Optional[str] = None) -> dict:
+    docs = await run_in_threadpool(retrieve, query, category)
+    logger.info("검색 %d건 (category=%s, scores=%s)", len(docs), category, [round(d["score"], 3) for d in docs])
+    if not docs:
+        return {"answer": NO_ANSWER, "sources": []}
+
+    try:
+        response = await get_llm().chat.completions.create(
+            model=config.MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": create_prompt(query, docs)},
+            ],
+            temperature=0.0,
+            max_tokens=512,
+        )
+        answer = (response.choices[0].message.content or "").strip()
+        if not answer:
+            raise ValueError("LLM이 빈 응답을 반환했습니다.")
+    except Exception:
+        logger.exception("LLM 호출 실패")
+        return {"answer": ERROR_ANSWER, "sources": []}
+
+    sources = [] if NO_ANSWER in answer else format_sources(docs)
+    return {"answer": answer, "sources": sources}
