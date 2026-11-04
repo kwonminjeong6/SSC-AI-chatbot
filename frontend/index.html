@@ -26,12 +26,14 @@
             display: flex;
             flex-direction: column;
             height: 100vh;
+            height: 100dvh;
         }
 
+        /* ---------- 헤더 ---------- */
         header {
             background-color: var(--chat-bg);
             border-bottom: 1px solid var(--border-color);
-            padding: 15px 20px;
+            padding: 12px 16px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -39,7 +41,16 @@
             box-shadow: 0 1px 3px rgba(0,0,0,0.05);
         }
 
-        header h1 { font-size: 1.2rem; font-weight: 600; color: #111827; }
+        .title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; max-width: 800px; }
+        header h1 { font-size: 1.1rem; font-weight: 600; color: #111827; text-align: center; flex: 1; }
+
+        .tool-btn {
+            padding: 6px 12px; font-size: 0.82rem; font-weight: 500; white-space: nowrap;
+            border: 1px solid var(--border-color); background: #fff; border-radius: 8px; cursor: pointer;
+        }
+        .tool-btn:hover { background: #f3f4f6; }
+        .tool-btn.primary { background: var(--primary-color); color: #fff; border-color: var(--primary-color); }
+        .tool-btn.primary:hover { background: #0e8c6d; }
 
         .detail-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer; user-select: none; }
         .detail-toggle input { display: none; }
@@ -49,15 +60,26 @@
         .detail-toggle input:checked + .switch::after { left: 18px; }
         .scope-hint { font-size: 0.75rem; color: #6b7280; }
 
-        .group-chips { display: none; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 800px; }
-        .group-chips.open { display: flex; }
+        /* 분야 버튼: 항상 2줄 (5개 + 4개). 화면이 좁으면 옆으로 밀어서 봅니다. */
+        .group-chips {
+            display: none;
+            grid-template-columns: repeat(5, minmax(84px, 1fr));
+            gap: 6px;
+            width: 100%;
+            max-width: 640px;
+            overflow-x: auto;
+            padding-bottom: 2px;
+        }
+        .group-chips.open { display: grid; }
         .chip {
-            padding: 6px 14px; font-size: 0.85rem; border: 1px solid var(--border-color);
-            background-color: #fff; border-radius: 20px; cursor: pointer; font-weight: 500;
+            padding: 7px 4px; font-size: 0.82rem; text-align: center; white-space: nowrap;
+            border: 1px solid var(--border-color); background-color: #fff;
+            border-radius: 20px; cursor: pointer; font-weight: 500;
         }
         .chip:hover { background-color: #f3f4f6; }
         .chip.active { background-color: var(--primary-color); color: white; border-color: var(--primary-color); }
 
+        /* ---------- 대화 ---------- */
         .chat-container {
             flex: 1;
             overflow-y: auto;
@@ -124,14 +146,48 @@
         }
         .send-btn:hover { background-color: #0e8c6d; }
         .send-btn:disabled { background-color: #9ca3af; cursor: not-allowed; }
+
+        /* ---------- 대화 기록 서랍 ---------- */
+        .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 10; }
+        .overlay.open { display: block; }
+        .drawer {
+            position: fixed; top: 0; left: 0; bottom: 0; width: min(320px, 85vw);
+            background: #fff; z-index: 11; box-shadow: 2px 0 12px rgba(0,0,0,0.15);
+            transform: translateX(-100%); transition: transform 0.2s;
+            display: flex; flex-direction: column;
+        }
+        .drawer.open { transform: translateX(0); }
+        .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border-color); font-weight: 600; }
+        .drawer-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+        .drawer-empty { padding: 24px 12px; text-align: center; color: #9ca3af; font-size: 0.85rem; }
+        .conv-item { display: flex; align-items: center; gap: 4px; border-radius: 8px; }
+        .conv-item.active { background: #ecfdf5; }
+        .conv-open { flex: 1; text-align: left; background: none; border: none; padding: 10px; cursor: pointer; border-radius: 8px; min-width: 0; }
+        .conv-open:hover { background: #f3f4f6; }
+        .conv-title { display: block; font-size: 0.88rem; color: #111827; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .conv-date { display: block; font-size: 0.72rem; color: #9ca3af; margin-top: 2px; }
+        .conv-del { background: none; border: none; cursor: pointer; color: #9ca3af; font-size: 1rem; padding: 8px 10px; border-radius: 8px; }
+        .conv-del:hover { color: #dc2626; background: #fee2e2; }
+        .drawer-foot { padding: 10px 12px; border-top: 1px solid var(--border-color); }
+        .drawer-foot .tool-btn { width: 100%; }
+
+        @media (max-width: 520px) {
+            header h1 { font-size: 0.95rem; }
+            .chat-container { padding: 14px; }
+            .message { max-width: 92%; }
+        }
     </style>
 </head>
 <body>
 
     <header>
-        <h1>🎓 ChatSSC : 수원과학대 AI 챗봇</h1>
+        <div class="title-row">
+            <button class="tool-btn" id="historyBtn" type="button">🕘 기록</button>
+            <h1>🎓 ChatSSC : 수원과학대 AI 챗봇</h1>
+            <button class="tool-btn primary" id="newChatBtn" type="button">＋ 새 대화</button>
+        </div>
         <label class="detail-toggle">
-            <input type="checkbox" id="detailToggle" onchange="toggleDetail(this.checked)">
+            <input type="checkbox" id="detailToggle">
             <span class="switch"></span>
             <span>세부 검색</span>
             <span class="scope-hint" id="scopeHint">전체 규정에서 검색합니다</span>
@@ -139,22 +195,28 @@
         <div class="group-chips" id="groupChips"></div>
     </header>
 
-    <div class="chat-container" id="chatContainer">
-        <div class="message bot">
-            <div class="avatar">AI</div>
-            <div class="bubble">안녕하세요! 수원과학대 규정에 대해 무엇이든 물어보세요. 기본은 전체 규정에서 찾아 답변하며, 상단의 '세부 검색'을 켜면 분야를 골라 검색할 수 있습니다.</div>
-        </div>
-    </div>
+    <div class="chat-container" id="chatContainer"></div>
 
     <div class="input-area">
         <div class="input-wrapper">
-            <textarea id="userInput" rows="1" maxlength="500" placeholder="질문을 입력하세요... (예: 계절학기는 어떻게 운영되나요?)"
-                      onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
-            <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="전송">
+            <textarea id="userInput" rows="1" maxlength="500" placeholder="질문을 입력하세요... (예: 계절학기는 어떻게 운영되나요?)"></textarea>
+            <button class="send-btn" id="sendBtn" type="button" aria-label="전송">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
             </button>
         </div>
     </div>
+
+    <div class="overlay" id="overlay"></div>
+    <aside class="drawer" id="drawer" aria-label="대화 기록">
+        <div class="drawer-head">
+            <span>대화 기록</span>
+            <button class="tool-btn" id="closeDrawerBtn" type="button">닫기</button>
+        </div>
+        <div class="drawer-list" id="drawerList"></div>
+        <div class="drawer-foot">
+            <button class="tool-btn" id="clearAllBtn" type="button">기록 전체 삭제</button>
+        </div>
+    </aside>
 
     <script>
         // 백엔드가 같은 주소에서 이 페이지를 제공하면 상대경로, 파일을 직접 열었으면 로컬 서버로 연결
@@ -166,114 +228,60 @@
             {id: '4', name: '인사·행정'}, {id: '5', name: '교육과정·학사'}, {id: '6', name: '학생·장학'},
             {id: '7', name: '부속기관·센터'}, {id: '8', name: '산학협력·연구'}, {id: '9', name: '노사'}
         ];
+        const GREETING = "안녕하세요! 수원과학대 규정에 대해 무엇이든 물어보세요. 기본은 전체 규정에서 찾아 답변하며, 상단의 '세부 검색'을 켜면 분야를 골라 검색할 수 있습니다.";
+
+        const STORE_KEY = 'chatssc_conversations_v1';
+        const MAX_CONVS = 30;      // 보관할 대화 수
+        const MAX_MESSAGES = 100;  // 대화 하나당 보관할 메시지 수
+
+        const $ = id => document.getElementById(id);
+        const chatContainer = $('chatContainer');
+        const inputField = $('userInput');
+        const sendBtn = $('sendBtn');
+
         const selectedGroups = new Set(); // 비어 있으면 전체 검색
         let detailOn = false;
         let sending = false;
+        let convs = [];     // [{id, title, messages: [{text, sender, sources}], updated}]
+        let activeId = null;
 
-        function renderChips(groups) {
-            const box = document.getElementById('groupChips');
-            box.textContent = '';
-            groups.forEach(g => {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'chip';
-                btn.textContent = g.name;
-                btn.onclick = () => {
-                    if (selectedGroups.has(g.id)) selectedGroups.delete(g.id); else selectedGroups.add(g.id);
-                    btn.classList.toggle('active', selectedGroups.has(g.id));
-                    updateHint();
-                };
-                box.appendChild(btn);
-            });
-        }
-
-        function updateHint() {
-            const hint = document.getElementById('scopeHint');
-            hint.textContent = (detailOn && selectedGroups.size)
-                ? `선택한 ${selectedGroups.size}개 분야에서 검색합니다`
-                : '전체 규정에서 검색합니다';
-        }
-
-        function toggleDetail(on) {
-            detailOn = on;
-            document.getElementById('groupChips').classList.toggle('open', on);
-            updateHint();
-        }
-
-        async function loadGroups() {
-            let groups = FALLBACK_GROUPS;
+        /* ---------- 저장 (이 기기의 브라우저에만 저장됩니다) ---------- */
+        function loadStore() {
             try {
-                const res = await fetch(GROUPS_URL);
-                if (res.ok) {
-                    const data = await res.json();
-                    if (Array.isArray(data) && data.length) groups = data;
+                const data = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+                if (data && Array.isArray(data.convs)) {
+                    convs = data.convs.filter(c => c && c.id && Array.isArray(c.messages));
+                    activeId = data.activeId || null;
                 }
-            } catch (e) { /* 기본값 사용 */ }
-            renderChips(groups);
-        }
-        loadGroups();
-
-        function autoGrow(el) {
-            el.style.height = 'auto';
-            el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+            } catch (e) { /* 저장소를 못 쓰면 이번 방문 동안만 기록이 유지됩니다 */ }
         }
 
-        function handleKey(event) {
-            // isComposing: 한글 조합 중 Enter로 마지막 글자가 중복 전송되는 것을 방지
-            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-                event.preventDefault();
-                sendMessage();
-            }
-        }
-
-        async function sendMessage() {
-            if (sending) return;
-
-            const inputField = document.getElementById('userInput');
-            const sendBtn = document.getElementById('sendBtn');
-            const query = inputField.value.trim();
-            if (!query) return;
-
-            sending = true;
-            sendBtn.disabled = true;
-            appendMessage(query, 'user');
-            inputField.value = '';
-            autoGrow(inputField);
-            const loading = appendMessage('답변을 찾는 중입니다...', 'bot');
-
+        function saveStore() {
             try {
-                const response = await fetch(API_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query, groups: (detailOn && selectedGroups.size) ? [...selectedGroups] : null })
-                });
-
-                if (!response.ok) {
-                    const err = await response.json().catch(() => ({}));
-                    const detail = typeof err.detail === 'string' ? err.detail : '서버 통신에 실패했습니다.';
-                    // 어느 주소가 어떤 상태코드를 돌려줬는지 화면에 함께 표시 (원인 파악용)
-                    throw new Error(`${detail} (HTTP ${response.status}, ${API_URL})`);
-                }
-
-                const data = await response.json();
-                loading.remove();
-                appendMessage(data.answer, 'bot', data.sources);
-            } catch (error) {
-                loading.remove();
-                const message = error instanceof TypeError
-                    ? '서버에 연결할 수 없습니다. 백엔드(Uvicorn)가 실행 중인지 확인해주세요.'
-                    : error.message;
-                appendMessage('⚠️ ' + message, 'bot');
-            } finally {
-                sending = false;
-                sendBtn.disabled = false;
-                inputField.focus();
-            }
+                const keep = convs.filter(c => c.messages.length > 0).slice(0, MAX_CONVS);
+                localStorage.setItem(STORE_KEY, JSON.stringify({convs: keep, activeId: activeId}));
+            } catch (e) { /* 무시 */ }
         }
 
+        function newConv() {
+            return {
+                id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                title: '새 대화', messages: [], updated: Date.now()
+            };
+        }
+
+        function activeConv() {
+            let conv = convs.find(c => c.id === activeId);
+            if (!conv) {
+                conv = newConv();
+                convs.unshift(conv);
+                activeId = conv.id;
+            }
+            return conv;
+        }
+
+        /* ---------- 화면 그리기 ---------- */
         function appendMessage(text, sender, sources = null) {
-            const chatContainer = document.getElementById('chatContainer');
-
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${sender}`;
 
@@ -298,6 +306,226 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
             return messageDiv;
         }
+
+        function renderChat() {
+            chatContainer.textContent = '';
+            appendMessage(GREETING, 'bot');
+            activeConv().messages.forEach(m => appendMessage(m.text, m.sender, m.sources));
+        }
+
+        /* ---------- 대화 기록 서랍 ---------- */
+        function openDrawer() { renderDrawer(); $('drawer').classList.add('open'); $('overlay').classList.add('open'); }
+        function closeDrawer() { $('drawer').classList.remove('open'); $('overlay').classList.remove('open'); }
+
+        function renderDrawer() {
+            const list = $('drawerList');
+            list.textContent = '';
+            const items = convs.filter(c => c.messages.length > 0).sort((a, b) => b.updated - a.updated);
+            if (!items.length) {
+                const empty = document.createElement('div');
+                empty.className = 'drawer-empty';
+                empty.textContent = '저장된 대화가 없습니다.';
+                list.appendChild(empty);
+                return;
+            }
+            items.forEach(conv => {
+                const row = document.createElement('div');
+                row.className = 'conv-item' + (conv.id === activeId ? ' active' : '');
+
+                const open = document.createElement('button');
+                open.type = 'button';
+                open.className = 'conv-open';
+                const title = document.createElement('span');
+                title.className = 'conv-title';
+                title.textContent = conv.title;
+                const date = document.createElement('span');
+                date.className = 'conv-date';
+                date.textContent = new Date(conv.updated).toLocaleString('ko-KR', {month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'});
+                open.appendChild(title);
+                open.appendChild(date);
+                open.onclick = () => switchConv(conv.id);
+
+                const del = document.createElement('button');
+                del.type = 'button';
+                del.className = 'conv-del';
+                del.setAttribute('aria-label', '이 대화 삭제');
+                del.textContent = '✕';
+                del.onclick = () => deleteConv(conv.id);
+
+                row.appendChild(open);
+                row.appendChild(del);
+                list.appendChild(row);
+            });
+        }
+
+        function switchConv(id) {
+            activeId = id;
+            saveStore();
+            renderChat();
+            closeDrawer();
+        }
+
+        function deleteConv(id) {
+            convs = convs.filter(c => c.id !== id);
+            if (activeId === id) activeId = null;
+            saveStore();
+            if (activeId === null) renderChat();
+            renderDrawer();
+        }
+
+        function clearAll() {
+            if (!confirm('저장된 대화 기록을 모두 삭제할까요?')) return;
+            convs = [];
+            activeId = null;
+            saveStore();
+            renderChat();
+            renderDrawer();
+        }
+
+        function startNewChat() {
+            const current = activeConv();
+            if (current.messages.length > 0) {  // 빈 대화를 여러 개 만들지 않음
+                const fresh = newConv();
+                convs.unshift(fresh);
+                activeId = fresh.id;
+                saveStore();
+                renderChat();
+            }
+            closeDrawer();
+            inputField.focus();
+        }
+
+        /* ---------- 세부 검색 ---------- */
+        function renderChips(groups) {
+            const box = $('groupChips');
+            box.textContent = '';
+            groups.forEach(g => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'chip';
+                btn.textContent = g.name;
+                btn.onclick = () => {
+                    if (selectedGroups.has(g.id)) selectedGroups.delete(g.id); else selectedGroups.add(g.id);
+                    btn.classList.toggle('active', selectedGroups.has(g.id));
+                    updateHint();
+                };
+                box.appendChild(btn);
+            });
+        }
+
+        function updateHint() {
+            $('scopeHint').textContent = (detailOn && selectedGroups.size)
+                ? `선택한 ${selectedGroups.size}개 분야에서 검색합니다`
+                : '전체 규정에서 검색합니다';
+        }
+
+        function toggleDetail(on) {
+            detailOn = on;
+            $('groupChips').classList.toggle('open', on);
+            updateHint();
+        }
+
+        async function loadGroups() {
+            let groups = FALLBACK_GROUPS;
+            try {
+                const res = await fetch(GROUPS_URL);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data) && data.length) groups = data;
+                }
+            } catch (e) { /* 기본값 사용 */ }
+            renderChips(groups);
+        }
+
+        /* ---------- 질문 보내기 ---------- */
+        function autoGrow(el) {
+            el.style.height = 'auto';
+            el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+        }
+
+        function addToConv(conv, text, sender, sources = null) {
+            conv.messages.push({text: text, sender: sender, sources: sources});
+            if (conv.messages.length > MAX_MESSAGES) conv.messages.splice(0, conv.messages.length - MAX_MESSAGES);
+            conv.updated = Date.now();
+            if (sender === 'user' && conv.title === '새 대화') {
+                conv.title = text.length > 24 ? text.slice(0, 24) + '…' : text;
+            }
+        }
+
+        async function sendMessage() {
+            if (sending) return;
+            const query = inputField.value.trim();
+            if (!query) return;
+
+            sending = true;
+            sendBtn.disabled = true;
+            const conv = activeConv();
+            const convId = conv.id;
+            addToConv(conv, query, 'user');
+            saveStore();
+            appendMessage(query, 'user');
+            inputField.value = '';
+            autoGrow(inputField);
+            const loading = appendMessage('답변을 찾는 중입니다...', 'bot');
+
+            let replyText, replySources = null;
+            try {
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query, groups: (detailOn && selectedGroups.size) ? [...selectedGroups] : null })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json().catch(() => ({}));
+                    const detail = typeof err.detail === 'string' ? err.detail : '서버 통신에 실패했습니다.';
+                    // 어느 주소가 어떤 상태코드를 돌려줬는지 화면에 함께 표시 (원인 파악용)
+                    throw new Error(`${detail} (HTTP ${response.status}, ${API_URL})`);
+                }
+                const data = await response.json();
+                replyText = data.answer;
+                replySources = data.sources;
+            } catch (error) {
+                replyText = '⚠️ ' + (error instanceof TypeError
+                    ? '서버에 연결할 수 없습니다. 백엔드(Uvicorn)가 실행 중인지 확인해주세요.'
+                    : error.message);
+            }
+
+            // 기다리는 동안 다른 대화로 옮겨 갔어도 답변은 질문한 대화에 저장합니다.
+            const target = convs.find(c => c.id === convId);
+            if (target) {
+                addToConv(target, replyText, 'bot', replySources);
+                saveStore();
+            }
+            loading.remove();
+            if (activeId === convId) appendMessage(replyText, 'bot', replySources);
+
+            sending = false;
+            sendBtn.disabled = false;
+            inputField.focus();
+        }
+
+        /* ---------- 시작 ---------- */
+        inputField.addEventListener('input', () => autoGrow(inputField));
+        inputField.addEventListener('keydown', event => {
+            // isComposing: 한글 조합 중 Enter로 마지막 글자가 중복 전송되는 것을 방지
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+        sendBtn.addEventListener('click', sendMessage);
+        $('newChatBtn').addEventListener('click', startNewChat);
+        $('historyBtn').addEventListener('click', openDrawer);
+        $('closeDrawerBtn').addEventListener('click', closeDrawer);
+        $('overlay').addEventListener('click', closeDrawer);
+        $('clearAllBtn').addEventListener('click', clearAll);
+        $('detailToggle').addEventListener('change', event => toggleDetail(event.target.checked));
+        document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDrawer(); });
+
+        loadStore();
+        renderChat();
+        loadGroups();
     </script>
 </body>
 </html>
