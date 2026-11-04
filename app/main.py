@@ -1,8 +1,8 @@
 import logging
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,11 +12,16 @@ from app import config, embedding
 from app.category import list_groups, normalize_groups
 from app.qdrant import init_collection
 from app.rag import generate_rag_answer
+from app.ratelimit import RateLimiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("app.main")
 
 FRONTEND_DIR = config.BASE_DIR / "frontend"
+
+# 접속자(IP)별 한도와 서버 전체 한도. 후자는 주소를 속이는 요청까지 막는 안전장치입니다.
+ip_limiter = RateLimiter(config.RATE_LIMIT_PER_MIN)
+global_limiter = RateLimiter(config.RATE_LIMIT_GLOBAL_PER_MIN)
 
 
 @asynccontextmanager
@@ -32,7 +37,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="대학 규정 안내 RAG 챗봇 API",
     description="Qdrant Cloud + OpenRouter LLM 기반 대학 규정 안내 챗봇 (기본: 전체 규정 검색, 선택: 분야별 세부 검색)",
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan,
 )
 
@@ -40,10 +45,18 @@ app = FastAPI(
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
+class HistoryItem(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=2000)
+
+
 class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500, description="사용자 질문", examples=["계절학기는 어떻게 운영되나요?"])
     groups: Optional[list[str]] = Field(
         None, max_length=20, description="세부 검색: 분야 번호('1'~'9') 목록. 비우면 전체 규정에서 검색"
+    )
+    history: Optional[list[HistoryItem]] = Field(
+        None, max_length=20, description="후속 질문용: 앞 대화(최근 것). 질문을 완결된 문장으로 고쳐 쓰는 데만 사용"
     )
 
 
@@ -52,17 +65,41 @@ class ChatResponse(BaseModel):
     sources: list[str] = Field(..., description="출처 목록 (규정명 p.페이지)")
 
 
+def client_ip(http_request: Request) -> str:
+    """Cloud Run 뒤에서는 접속자 주소가 X-Forwarded-For 헤더에 들어 있습니다."""
+    forwarded = http_request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return http_request.client.host if http_request.client else "unknown"
+
+
+def check_rate_limit(http_request: Request) -> None:
+    if not config.RATE_LIMIT_ENABLED:
+        return
+    ip = client_ip(http_request)
+    if not ip_limiter.allow(ip) or not global_limiter.allow("*"):
+        logger.warning("요청 제한 적용 (ip=%s)", ip)
+        raise HTTPException(
+            status_code=429,
+            detail="요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+            headers={"Retry-After": "30"},
+        )
+
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
-    query = request.query.strip()
+async def chat_endpoint(body: ChatRequest, http_request: Request):
+    check_rate_limit(http_request)
+
+    query = body.query.strip()
     if not query:
         raise HTTPException(status_code=422, detail="질문을 입력해 주세요.")
 
-    groups = normalize_groups(request.groups)
-    logger.info("질문 수신 (groups=%s)", groups)
+    groups = normalize_groups(body.groups)
+    history = [{"role": h.role, "content": h.content} for h in (body.history or [])]
+    logger.info("질문 수신 (groups=%s, history=%d)", groups, len(history))
 
     try:
-        result = await generate_rag_answer(query, groups)
+        result = await generate_rag_answer(query, groups, history or None)
     except Exception:
         logger.exception("챗봇 API 처리 중 오류")
         raise HTTPException(status_code=500, detail="챗봇 서버에서 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")

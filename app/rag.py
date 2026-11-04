@@ -1,5 +1,6 @@
-"""검색 → 프롬프트 구성 → LLM 답변 생성."""
+"""(후속 질문 고쳐 쓰기) → 검색 → 프롬프트 구성 → LLM 답변 생성."""
 import logging
+import re
 from datetime import date
 from functools import lru_cache
 from typing import Optional
@@ -26,6 +27,25 @@ RULES = f"""다음 규칙을 반드시 지키십시오:
 5. 문서에 없는 내용은 추측하거나 만들어내지 마십시오.
 6. 문서에서 질문의 근거를 전혀 찾을 수 없을 때만 정확히 다음 문장으로 답하십시오: "{NO_ANSWER}"
 7. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오."""
+
+REWRITE_SYSTEM = "너는 대화의 마지막 질문을 검색용 질문으로 고쳐 쓰는 도우미다."
+REWRITE_PROMPT = """아래 대화를 참고해서 '마지막 질문'을 앞 대화 없이도 이해되는 하나의 완결된 질문으로 고쳐 쓰십시오.
+- 마지막 질문이 이미 완결되어 있으면 그대로 출력하십시오.
+- 대화에 없는 내용을 새로 만들어 넣지 마십시오.
+- 설명 없이 질문 한 문장만 출력하십시오.
+
+[대화]
+{history}
+
+[마지막 질문]
+{query}
+
+[고쳐 쓴 질문]
+"""
+
+# 앞 질문을 가리키는 말이 들어 있거나 질문이 아주 짧을 때만 고쳐 씁니다(LLM 호출 비용 절약).
+FOLLOW_UP_HINTS = ("그럼", "그러면", "그렇다면", "그건", "그거", "그것", "그게", "거기", "이건", "이거", "방금", "앞서", "아까", "그 경우", "그때")
+SHORT_QUERY_LEN = 15  # 공백을 뺀 글자 수
 
 
 @lru_cache(maxsize=1)
@@ -81,15 +101,61 @@ def format_sources(docs: list[dict]) -> list[str]:
     return list(dict.fromkeys(labels))
 
 
-async def generate_rag_answer(query: str, groups: Optional[list[str]] = None) -> dict:
-    key = make_key(query, groups)
+def needs_rewrite(query: str, history: Optional[list[dict]]) -> bool:
+    if not history:
+        return False
+    compact = re.sub(r"\s+", "", query)
+    return len(compact) <= SHORT_QUERY_LEN or any(hint in query for hint in FOLLOW_UP_HINTS)
+
+
+def format_history(history: list[dict]) -> str:
+    lines = []
+    for item in history[-config.HISTORY_MAX_MESSAGES:]:
+        role = "사용자" if item.get("role") == "user" else "챗봇"
+        text = " ".join(str(item.get("content", "")).split())[:300]
+        if text:
+            lines.append(f"{role}: {text}")
+    return "\n".join(lines)
+
+
+async def rewrite_query(query: str, history: Optional[list[dict]]) -> str:
+    """앞 대화를 참고해 '그럼 최대 몇 학점이야?' 같은 질문을 완결된 문장으로 고칩니다. 실패하면 원래 질문을 씁니다."""
+    if not needs_rewrite(query, history):
+        return query
+    try:
+        response = await get_llm().chat.completions.create(
+            model=config.MODEL_NAME,
+            messages=[
+                {"role": "system", "content": REWRITE_SYSTEM},
+                {"role": "user", "content": REWRITE_PROMPT.format(history=format_history(history), query=query)},
+            ],
+            temperature=0.0,
+            max_tokens=120,
+        )
+        lines = [l.strip().strip('"\'“”‘’') for l in (response.choices[0].message.content or "").splitlines() if l.strip()]
+        rewritten = lines[0] if lines else ""
+        if not rewritten or len(rewritten) > 200:
+            return query
+        logger.info("후속 질문 고쳐 쓰기: %r -> %r", query, rewritten)
+        return rewritten
+    except Exception:
+        logger.exception("질문 고쳐 쓰기 실패 — 원래 질문으로 검색합니다")
+        return query
+
+
+async def generate_rag_answer(
+    query: str, groups: Optional[list[str]] = None, history: Optional[list[dict]] = None
+) -> dict:
+    standalone = await rewrite_query(query, history)
+
+    key = make_key(standalone, groups)
     if config.CACHE_ENABLED:  # 같은 질문이면 검색·LLM 호출 없이 바로 답변
         cached = answer_cache.get(key)
         if cached:
             logger.info("캐시 적중 (groups=%s)", groups)
             return {"answer": cached["answer"], "sources": list(cached["sources"])}
 
-    docs = await run_in_threadpool(retrieve, query, groups)
+    docs = await run_in_threadpool(retrieve, standalone, groups)
     logger.info("검색 %d건 (groups=%s, scores=%s)", len(docs), groups, [round(d["score"], 3) for d in docs])
     if not docs:
         return {"answer": NO_ANSWER, "sources": []}  # LLM 비용이 없으므로 캐시하지 않음
@@ -99,7 +165,7 @@ async def generate_rag_answer(query: str, groups: Optional[list[str]] = None) ->
             model=config.MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": create_prompt(query, docs)},
+                {"role": "user", "content": create_prompt(standalone, docs)},
             ],
             temperature=0.0,
             max_tokens=512,

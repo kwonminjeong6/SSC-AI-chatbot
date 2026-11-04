@@ -27,7 +27,7 @@ LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
 # --- 검색 ---
 TOP_K = int(os.getenv("TOP_K", "4"))
 # 코사인 유사도 하한. 이보다 낮은 청크는 "근거 없음"으로 취급합니다.
-# 기본값은 출발점일 뿐이므로 `python -m evaluation.run_eval` 결과를 보고 조정하세요.
+# 기본값은 출발점일 뿐이므로 실제 질문으로 시험해 보고 조정하세요.
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", "0.40"))
 
 # --- 청킹 ---
@@ -50,11 +50,18 @@ GROUPS = {
 }
 DEFAULT_CATEGORY = "기타"  # 규정 번호가 없는 파일
 
-# --- 서버 ---
-CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
-
-
-# --- 답변 캐시 ---
+# --- 답변 캐시 (같은 질문이면 검색·LLM 호출 없이 바로 답변) ---
 CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
 CACHE_TTL = int(os.getenv("CACHE_TTL", "21600"))  # 초 (6시간)
 CACHE_MAX = int(os.getenv("CACHE_MAX", "500"))
+
+# --- 요청 제한 (비용 보호). 같은 와이파이를 쓰는 사람이 많을 수 있으니 넉넉하게 잡습니다. ---
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "30"))  # 접속자(IP) 한 명당 분당 질문 수
+RATE_LIMIT_GLOBAL_PER_MIN = int(os.getenv("RATE_LIMIT_GLOBAL_PER_MIN", "300"))  # 서버 전체 분당 질문 수
+
+# --- 후속 질문 (앞 대화를 참고해 질문을 완결된 문장으로 고쳐 쓰기) ---
+HISTORY_MAX_MESSAGES = int(os.getenv("HISTORY_MAX_MESSAGES", "6"))  # 참고할 최근 메시지 수
+
+# --- 서버 ---
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
