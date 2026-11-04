@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 NO_ANSWER = "현재 등록된 대학 공식 자료에서는 해당 내용을 확인할 수 없습니다."
 ERROR_ANSWER = "답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
-SYSTEM_PROMPT = "너는 대학 규정 및 학사 정보 안내 챗봇이다. 제공된 문서만을 근거로, 주어진 규칙을 엄격히 지켜 답변하라."
+SYSTEM_PROMPT = "너는 대학 규정 및 학사 정보 안내 챗봇이다. 제공된 문서만을 근거로, 주어진 규칙을 엄격히 지켜 한국어로 답변하라."
 CONTENT_TYPE_LABEL = {"article": "조문", "table": "표", "revision": "개정 대비표"}
 
 RULES = f"""다음 규칙을 반드시 지키십시오:
@@ -27,7 +27,8 @@ RULES = f"""다음 규칙을 반드시 지키십시오:
 5. 기간·횟수·학기·학점·금액 등 한도를 묻는 질문은 학칙뿐 아니라 시행세칙·내규 등 검색된 모든 문서의 관련 조항을 끝까지 확인하십시오. 1회당 한도와 총 횟수(통산 한도)가 따로 있으면 둘 다 빠짐없이 답하고, 한도에서 제외되는 예외도 함께 알려 주십시오.
 6. 문서에 없는 내용은 추측하거나 만들어내지 마십시오.
 7. 문서에서 질문의 근거를 전혀 찾을 수 없을 때만 정확히 다음 문장으로 답하십시오: "{NO_ANSWER}"
-8. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오."""
+8. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오.
+9. 반드시 한국어로만 답하십시오. 중국어·영어 등 다른 언어를 섞지 마십시오. 질문에 대한 답이 끝나면 바로 멈추고, 새로운 질문이나 보기(A, B, C 등), 해설을 만들어 덧붙이지 마십시오."""
 
 REWRITE_SYSTEM = "너는 대화의 마지막 질문을 검색용 질문으로 고쳐 쓰는 도우미다."
 REWRITE_PROMPT = """아래 대화를 참고해서 '마지막 질문'을 앞 대화 없이도 이해되는 하나의 완결된 질문으로 고쳐 쓰십시오.
@@ -47,6 +48,10 @@ REWRITE_PROMPT = """아래 대화를 참고해서 '마지막 질문'을 앞 대�
 # 앞 질문을 가리키는 말이 들어 있거나 질문이 아주 짧을 때만 고쳐 씁니다(LLM 호출 비용 절약).
 FOLLOW_UP_HINTS = ("그럼", "그러면", "그렇다면", "그건", "그거", "그것", "그게", "거기", "이건", "이거", "방금", "앞서", "아까", "그 경우", "그때")
 SHORT_QUERY_LEN = 15  # 공백을 뺀 글자 수
+
+# 한국어 답변 사이에 한자(중국어)가 2글자 이상 이어지면 모델이 이탈한 것으로 봅니다.
+HAN_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
+MIN_ANSWER_LEN = 10
 
 
 @lru_cache(maxsize=1)
@@ -102,6 +107,18 @@ def format_sources(docs: list[dict]) -> list[str]:
     return list(dict.fromkeys(labels))
 
 
+def clean_answer(text: str) -> str:
+    """모델이 답을 마치고 중국어 등으로 이탈하면, 그 앞의 마지막 완결된 문장까지만 남깁니다."""
+    match = HAN_RUN.search(text)
+    if not match:
+        return text
+    head = text[: match.start()]
+    ends = [head.rfind(mark) + len(mark) for mark in ("다.", "요.", "다!", "요!", "\n") if head.rfind(mark) >= 0]
+    cleaned = head[: max(ends)] if ends else head
+    logger.warning("답변에서 중국어 이탈을 잘라냈습니다 (원래 %d자 -> %d자)", len(text), len(cleaned.strip()))
+    return cleaned.strip()
+
+
 def needs_rewrite(query: str, history: Optional[list[dict]]) -> bool:
     if not history:
         return False
@@ -135,7 +152,7 @@ async def rewrite_query(query: str, history: Optional[list[dict]]) -> str:
         )
         lines = [l.strip().strip('"\'“”‘’') for l in (response.choices[0].message.content or "").splitlines() if l.strip()]
         rewritten = lines[0] if lines else ""
-        if not rewritten or len(rewritten) > 200:
+        if not rewritten or len(rewritten) > 200 or HAN_RUN.search(rewritten):
             return query
         logger.info("후속 질문 고쳐 쓰기: %r -> %r", query, rewritten)
         return rewritten
@@ -171,9 +188,9 @@ async def generate_rag_answer(
             temperature=0.0,
             max_tokens=512,
         )
-        answer = (response.choices[0].message.content or "").strip()
-        if not answer:
-            raise ValueError("LLM이 빈 응답을 반환했습니다.")
+        answer = clean_answer((response.choices[0].message.content or "").strip())
+        if len(answer) < MIN_ANSWER_LEN:
+            raise ValueError("LLM 응답이 비었거나 너무 짧습니다.")
     except Exception:
         logger.exception("LLM 호출 실패")
         return {"answer": ERROR_ANSWER, "sources": []}  # 오류는 캐시하지 않음
