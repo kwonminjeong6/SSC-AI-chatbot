@@ -302,6 +302,10 @@
         const inputField = $('userInput');
         const sendBtn = $('sendBtn');
 
+        // 폰·태블릿처럼 손가락으로 쓰는 기기에서는 입력창에 자동으로 커서를 주지 않습니다(키보드가 저절로 올라오는 것 방지).
+        const isTouchDevice = !window.matchMedia('(pointer: fine)').matches;
+        function focusInput() { if (!isTouchDevice) inputField.focus(); }
+
         const selectedGroups = new Set(); // 비어 있으면 전체 검색
         let detailOn = false;
         let sending = false;
@@ -509,7 +513,7 @@
                 renderChat();
             }
             closeDrawer();
-            inputField.focus();
+            focusInput();
         }
 
         /* ---------- 세부 검색 ---------- */
@@ -628,7 +632,7 @@
 
             sending = false;
             sendBtn.disabled = false;
-            inputField.focus();
+            focusInput();   // 폰에서는 키보드를 올리지 않음
         }
 
         function sendMessage() {
@@ -636,6 +640,7 @@
             if (!query || sending) return;
             inputField.value = '';
             autoGrow(inputField);
+            if (isTouchDevice) inputField.blur();   // 폰에서는 질문을 보내면 키보드를 내려 답변이 잘 보이게 함
             ask(query);
         }
 
