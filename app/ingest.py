@@ -1,8 +1,14 @@
 """PDF → 청크 → 임베딩 → Qdrant 적재.
 
 사용법 (프로젝트 루트에서):
-    python -m app.ingest            # data/documents/*.pdf 적재 (같은 파일명은 교체)
-    python -m app.ingest --reset    # 컬렉션을 비우고 전부 다시 적재 (스키마 변경 시)
+    python -m app.ingest --reset --limit 5        # 기존 데이터를 모두 지우고 data/documents 의 앞 5개만 시험 적재
+    python -m app.ingest --skip-existing          # 전체 적재 (중단돼도 같은 명령으로 이어서)
+    python -m app.ingest --dir data/new_docs      # 다른 폴더(하위 폴더 포함)만 추가 적재 — 기존 문서는 유지
+    python -m app.ingest --group 4                # 폴더의 모든 PDF를 대분류 4로 저장 (번호가 없는 파일용)
+
+파일명 규칙:  '4-1-8 교원인사 규정.pdf'
+  → 규정번호 4-1-8 / 대분류 4(인사·행정) / 규정명 '교원인사 규정'
+  이름이 '폐지'로 끝나면(예: '..._폐지.pdf') 폐지된 규정이라 기본적으로 적재하지 않습니다.
 
 문서 유형별 처리:
   - 조문형 본문   : '제N조(제목)' 단위로 분할 (없으면 길이 기준 분할)
@@ -16,6 +22,8 @@ import hashlib
 import logging
 import re
 import sys
+import time
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -44,11 +52,35 @@ def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
-def category_of_file(path: Path) -> str:
-    for keyword, category in config.CATEGORY_BY_FILENAME.items():
-        if keyword in path.stem:
-            return category
-    return config.DEFAULT_CATEGORY
+REGULATION_NO = re.compile(r"^(\d+)-(\d+)-(\d+)[\s._\-]*(.*)$")
+ABOLISHED = re.compile(r"[\s_\-]*폐지\s*$")
+
+
+def parse_filename(path: Path, forced_group: Optional[str] = None) -> dict:
+    """'4-1-8 교원인사 규정.pdf' → 규정번호·대분류·규정명. 이름 끝이 '폐지'이면 폐지된 규정으로 표시합니다."""
+    stem = path.stem.strip()
+    abolished = bool(ABOLISHED.search(stem))
+    clean = ABOLISHED.sub("", stem).strip()
+    match = REGULATION_NO.match(clean)
+    if match:
+        first, second, serial, name = match.groups()
+        number, subgroup, group_no = f"{first}-{second}-{serial}", f"{first}-{second}", first
+        name = name.strip() or clean
+    else:
+        number = subgroup = group_no = None
+        name = clean
+    if forced_group:
+        group_no = forced_group
+    if group_no not in config.GROUPS:
+        group_no = None
+    return {
+        "regulation_no": number,
+        "regulation_name": name,
+        "group_no": group_no,
+        "subgroup_no": subgroup,
+        "category": config.GROUPS.get(group_no, config.DEFAULT_CATEGORY),
+        "abolished": abolished,
+    }
 
 
 def split_with_offsets(text: str, size: int = config.CHUNK_SIZE, overlap: int = config.CHUNK_OVERLAP):
@@ -303,10 +335,13 @@ def table_and_revision_records(pages: list[dict], today: date) -> list[dict]:
 
 
 # ───────────────────────── 조립 ─────────────────────────
-def process_pdf(path: Path, today: Optional[date] = None) -> tuple[list[dict], list[str]]:
+def process_pdf(
+    path: Path, today: Optional[date] = None, group: Optional[str] = None
+) -> tuple[list[dict], list[str]]:
     """PDF 1개 → (payload 청크 목록, 임베딩용 텍스트 목록)."""
     today = today or date.today()
-    doc_id, category = file_hash(path), category_of_file(path)
+    doc_id = file_hash(path)
+    meta = parse_filename(path, forced_group=group)
     pages = extract_pdf(path)
     records = article_records(pages) + table_and_revision_records(pages, today)
 
@@ -315,49 +350,117 @@ def process_pdf(path: Path, today: Optional[date] = None) -> tuple[list[dict], l
         chunk = {
             "status": "current",
             "document_type": "규정",
-            "category": category,
+            "category": meta["category"],
+            "group_no": meta["group_no"],
+            "subgroup_no": meta["subgroup_no"],
+            "regulation_no": meta["regulation_no"],
+            "regulation_name": meta["regulation_name"],
             "document_id": doc_id,
             "document_name": path.name,
             "chunk_id": f"{doc_id}_{i}",
             "chunk_index": i,
             **record,
         }
+        if meta["abolished"]:
+            chunk["status"] = "inactive"  # 폐지된 규정은 검색 대상에서 제외
         chunks.append(chunk)
-        # 문서명·조항/표 제목을 임베딩 텍스트에 덧붙여 검색 정확도를 높임 (저장되는 text는 원문 그대로)
-        context = " ".join(filter(None, [path.stem, chunk.get("article") or chunk.get("table_title")]))
+        # 분야·규정명·조항/표 제목을 임베딩 텍스트 앞에 붙여 검색 정확도를 높임 (저장되는 text는 원문 그대로)
+        context = " ".join(
+            filter(None, [meta["category"], meta["regulation_name"], chunk.get("article") or chunk.get("table_title")])
+        )
         embed_texts.append(f"{context}\n{chunk['text']}")
     return chunks, embed_texts
+
+
+def find_pdfs(directory: Path) -> list[Path]:
+    """하위 폴더까지 포함해 PDF를 찾습니다 (확장자 대소문자 무시)."""
+    return sorted(p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() == ".pdf")
+
+
+def find_duplicate_names(pdfs: list[Path]) -> list[str]:
+    counts = Counter(p.name for p in pdfs)
+    return sorted(name for name, n in counts.items() if n > 1)
 
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="PDF 문서를 Qdrant에 적재합니다.")
-    parser.add_argument("--reset", action="store_true", help="컬렉션을 삭제 후 다시 만들어 전부 재적재")
-    parser.add_argument("--dir", type=Path, default=config.DOCUMENT_DIR, help="PDF 폴더 (기본: data/documents)")
+    parser.add_argument("--dir", type=Path, default=config.DOCUMENT_DIR, help="PDF 폴더 (하위 폴더 포함, 기본: data/documents)")
+    parser.add_argument("--group", choices=sorted(config.GROUPS), help="폴더의 모든 PDF를 이 대분류(1~9)로 저장 (생략하면 파일명 번호로 판단)")
+    parser.add_argument("--include-abolished", action="store_true", help="이름이 '폐지'로 끝나는 규정도 비현행(inactive)으로 저장 (검색에는 나오지 않음)")
+    parser.add_argument("--skip-existing", action="store_true", help="이미 같은 내용으로 적재된 파일은 건너뜀 (중단 후 이어서 실행)")
+    parser.add_argument("--limit", type=int, help="앞에서부터 N개만 처리 (시험용)")
+    parser.add_argument("--reset", action="store_true", help="컬렉션을 삭제 후 전부 재적재 (기본 폴더에서만 사용 가능)")
     args = parser.parse_args()
 
-    pdfs = sorted(args.dir.glob("*.pdf"))
+    if args.reset and args.dir.resolve() != Path(config.DOCUMENT_DIR).resolve():
+        logger.error("--reset은 기본 폴더(%s)에서만 쓸 수 있습니다. 다른 폴더에 쓰면 기존 문서가 모두 사라집니다.", config.DOCUMENT_DIR)
+        return 1
+
+    pdfs = find_pdfs(args.dir)
     if not pdfs:
         logger.error("적재할 PDF가 없습니다: %s", args.dir)
         return 1
+    duplicates = find_duplicate_names(pdfs)
+    if duplicates:
+        logger.error("파일 이름이 같은 PDF가 있습니다(서로 덮어쓰게 되므로 이름을 바꿔 주세요): %s", ", ".join(duplicates))
+        return 1
+    if args.limit:
+        pdfs = pdfs[: args.limit]
 
     if args.reset:
         store.reset_collection()
     else:
         store.init_collection()
 
-    total = 0
-    for pdf in pdfs:
-        chunks, embed_texts = process_pdf(pdf)
-        if not chunks:
-            logger.warning("추출된 내용이 없습니다(스캔본이면 OCR 필요): %s", pdf.name)
+    done, skipped, empty, failed, abolished = [], [], [], [], []
+    by_category = Counter()
+    total_chunks = 0
+    started = time.time()
+    for i, pdf in enumerate(pdfs, 1):
+        label = f"[{i}/{len(pdfs)}] {pdf.name}"
+        if parse_filename(pdf, forced_group=args.group)["abolished"] and not args.include_abolished:
+            abolished.append(pdf.name)
+            logger.info("%s → 폐지된 규정이라 제외", label)
             continue
-        vectors = embedding.encode_batch(embed_texts)
-        store.delete_document(pdf.name)
-        total += store.upsert_documents(chunks, vectors)
-        logger.info("%s → %d개 청크 (category=%s)", pdf.name, len(chunks), chunks[0]["category"])
-    logger.info("✨ 적재 완료: 총 %d개 청크", total)
-    return 0
+        uploading = False
+        try:
+            if args.skip_existing and store.document_exists(pdf.name, file_hash(pdf)):
+                skipped.append(pdf.name)
+                logger.info("%s → 이미 적재됨, 건너뜀", label)
+                continue
+            chunks, embed_texts = process_pdf(pdf, group=args.group)
+            if not chunks:
+                empty.append(pdf.name)
+                logger.warning("%s → 추출된 내용이 없습니다 (스캔본이면 OCR 필요)", label)
+                continue
+            vectors = embedding.encode_batch(embed_texts)
+            uploading = True
+            store.delete_document(pdf.name)
+            total_chunks += store.upsert_documents(chunks, vectors)
+            done.append(pdf.name)
+            by_category[chunks[0]["category"]] += 1
+            logger.info("%s → %d개 청크 (분야=%s)", label, len(chunks), chunks[0]["category"])
+        except Exception:
+            logger.exception("%s → 실패", label)
+            failed.append(pdf.name)
+            if uploading:  # 일부만 올라간 문서가 '적재됨'으로 오인되지 않도록 정리
+                try:
+                    store.delete_document(pdf.name)
+                except Exception:
+                    logger.warning("실패한 문서 정리에 실패: %s", pdf.name)
+
+    logger.info("===== 적재 결과 (%.1f분) =====", (time.time() - started) / 60)
+    logger.info(
+        "성공 %d개 (청크 %d개) / 건너뜀 %d개 / 폐지 제외 %d개 / 내용 없음 %d개 / 실패 %d개",
+        len(done), total_chunks, len(skipped), len(abolished), len(empty), len(failed),
+    )
+    if by_category:
+        logger.info("분야별 문서 수: %s", ", ".join(f"{k} {v}개" for k, v in sorted(by_category.items())))
+    for title, names in (("내용 없음 (OCR 필요 가능)", empty), ("실패", failed)):
+        if names:
+            logger.warning("%s: %s", title, ", ".join(names))
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

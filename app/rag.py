@@ -8,6 +8,7 @@ from fastapi.concurrency import run_in_threadpool
 from openai import AsyncOpenAI
 
 from app import config, embedding
+from app.cache import answer_cache, make_key
 from app.qdrant import search_docs
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,10 @@ RULES = f"""다음 규칙을 반드시 지키십시오:
 1. 질문과 문서의 표현이 달라도 의미가 같은 내용을 찾아 답변하십시오.
 2. 표·수치 데이터는 행과 열을 정확히 대조하십시오. 표 제목의 연도(예: 2027학년도)가 질문과 일치하는 수치만 사용하고, 다른 연도의 수치를 섞지 마십시오.
 3. '[개정 후 ...]'로 표시된 내용이 현재 시행 중인 규정입니다.
-4. 문서에 없는 내용은 추측하거나 만들어내지 마십시오.
-5. 문서에서 질문의 근거를 전혀 찾을 수 없을 때만 정확히 다음 문장으로 답하십시오: "{NO_ANSWER}"
-6. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오."""
+4. 여러 규정이 검색되면 질문에 가장 직접 해당하는 규정을 근거로 삼고, 답변에 규정명을 밝히십시오.
+5. 문서에 없는 내용은 추측하거나 만들어내지 마십시오.
+6. 문서에서 질문의 근거를 전혀 찾을 수 없을 때만 정확히 다음 문장으로 답하십시오: "{NO_ANSWER}"
+7. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오."""
 
 
 @lru_cache(maxsize=1)
@@ -35,16 +37,26 @@ def get_llm() -> AsyncOpenAI:
     )
 
 
-def retrieve(query: str, category: Optional[str] = None) -> list[dict]:
-    """질문을 임베딩해 현행 문서 청크를 검색합니다(동기 함수, 스레드풀에서 호출)."""
-    return search_docs(embedding.encode(query), category=category)
+def retrieve(query: str, groups: Optional[list[str]] = None) -> list[dict]:
+    """질문을 임베딩해 현행 규정 청크를 검색합니다(동기 함수, 스레드풀에서 호출)."""
+    return search_docs(embedding.encode(query), groups=groups)
+
+
+def doc_title(doc: dict) -> str:
+    """사람이 읽는 규정 이름. 규정명이 없으면 파일명을 씁니다."""
+    return doc.get("regulation_name") or doc.get("document_name") or "알 수 없음"
 
 
 def format_context(docs: list[dict]) -> str:
     blocks = []
     for i, doc in enumerate(docs, 1):
-        meta = [
-            f"문서명: {doc.get('document_name', '알 수 없음')}",
+        title = doc_title(doc)
+        if doc.get("regulation_no"):
+            title += f" ({doc['regulation_no']})"
+        meta = [f"규정명: {title}"]
+        if doc.get("category"):
+            meta.append(f"분야: {doc['category']}")
+        meta += [
             f"페이지: {doc.get('page') or '-'}",
             f"유형: {CONTENT_TYPE_LABEL.get(doc.get('content_type'), '본문')}",
         ]
@@ -64,16 +76,23 @@ def create_prompt(question: str, docs: list[dict]) -> str:
 
 
 def format_sources(docs: list[dict]) -> list[str]:
-    """'문서명 p.페이지' 형태로, 등장 순서를 유지하며 중복을 제거합니다."""
-    labels = (f"{d.get('document_name', '출처 미상')} p.{d.get('page') or '-'}" for d in docs)
+    """'규정명 p.페이지' 형태로, 등장 순서를 유지하며 중복을 제거합니다."""
+    labels = (f"{doc_title(d)} p.{d['page']}" if d.get("page") else doc_title(d) for d in docs)
     return list(dict.fromkeys(labels))
 
 
-async def generate_rag_answer(query: str, category: Optional[str] = None) -> dict:
-    docs = await run_in_threadpool(retrieve, query, category)
-    logger.info("검색 %d건 (category=%s, scores=%s)", len(docs), category, [round(d["score"], 3) for d in docs])
+async def generate_rag_answer(query: str, groups: Optional[list[str]] = None) -> dict:
+    key = make_key(query, groups)
+    if config.CACHE_ENABLED:  # 같은 질문이면 검색·LLM 호출 없이 바로 답변
+        cached = answer_cache.get(key)
+        if cached:
+            logger.info("캐시 적중 (groups=%s)", groups)
+            return {"answer": cached["answer"], "sources": list(cached["sources"])}
+
+    docs = await run_in_threadpool(retrieve, query, groups)
+    logger.info("검색 %d건 (groups=%s, scores=%s)", len(docs), groups, [round(d["score"], 3) for d in docs])
     if not docs:
-        return {"answer": NO_ANSWER, "sources": []}
+        return {"answer": NO_ANSWER, "sources": []}  # LLM 비용이 없으므로 캐시하지 않음
 
     try:
         response = await get_llm().chat.completions.create(
@@ -90,7 +109,10 @@ async def generate_rag_answer(query: str, category: Optional[str] = None) -> dic
             raise ValueError("LLM이 빈 응답을 반환했습니다.")
     except Exception:
         logger.exception("LLM 호출 실패")
-        return {"answer": ERROR_ANSWER, "sources": []}
+        return {"answer": ERROR_ANSWER, "sources": []}  # 오류는 캐시하지 않음
 
     sources = [] if NO_ANSWER in answer else format_sources(docs)
-    return {"answer": answer, "sources": sources}
+    result = {"answer": answer, "sources": sources}
+    if config.CACHE_ENABLED:  # 성공한 답만 저장
+        answer_cache.set(key, result)
+    return result

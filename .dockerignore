@@ -1,0 +1,13 @@
+.env
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+data/
+tests/
+evaluation/
+*.zip
+README.md
+env.yaml
+qr_output/

@@ -41,20 +41,22 @@
 
         header h1 { font-size: 1.2rem; font-weight: 600; color: #111827; }
 
-        .category-tabs { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+        .detail-toggle { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; cursor: pointer; user-select: none; }
+        .detail-toggle input { display: none; }
+        .switch { width: 36px; height: 20px; background: #d1d5db; border-radius: 10px; position: relative; transition: background 0.2s; }
+        .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; background: #fff; border-radius: 50%; transition: left 0.2s; }
+        .detail-toggle input:checked + .switch { background: var(--primary-color); }
+        .detail-toggle input:checked + .switch::after { left: 18px; }
+        .scope-hint { font-size: 0.75rem; color: #6b7280; }
 
-        .tab-btn {
-            padding: 6px 14px;
-            font-size: 0.85rem;
-            border: 1px solid var(--border-color);
-            background-color: #fff;
-            border-radius: 20px;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-weight: 500;
+        .group-chips { display: none; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 800px; }
+        .group-chips.open { display: flex; }
+        .chip {
+            padding: 6px 14px; font-size: 0.85rem; border: 1px solid var(--border-color);
+            background-color: #fff; border-radius: 20px; cursor: pointer; font-weight: 500;
         }
-        .tab-btn:hover { background-color: #f3f4f6; }
-        .tab-btn.active { background-color: var(--primary-color); color: white; border-color: var(--primary-color); }
+        .chip:hover { background-color: #f3f4f6; }
+        .chip.active { background-color: var(--primary-color); color: white; border-color: var(--primary-color); }
 
         .chat-container {
             flex: 1;
@@ -128,23 +130,25 @@
 
     <header>
         <h1>🎓 ChatSSC : 수원과학대 AI 챗봇</h1>
-        <div class="category-tabs">
-            <button class="tab-btn active" onclick="setCategory(null, this)">전체 (자동 분류)</button>
-            <button class="tab-btn" onclick="setCategory('학사규정', this)">학사규정</button>
-            <button class="tab-btn" onclick="setCategory('장학금', this)">장학금</button>
-        </div>
+        <label class="detail-toggle">
+            <input type="checkbox" id="detailToggle" onchange="toggleDetail(this.checked)">
+            <span class="switch"></span>
+            <span>세부 검색</span>
+            <span class="scope-hint" id="scopeHint">전체 규정에서 검색합니다</span>
+        </label>
+        <div class="group-chips" id="groupChips"></div>
     </header>
 
     <div class="chat-container" id="chatContainer">
         <div class="message bot">
             <div class="avatar">AI</div>
-            <div class="bubble">안녕하세요! 대학 학칙 및 장학 규정 관련해서 무엇이든 물어보세요. 상단에서 카테고리를 선택하거나 자유롭게 질문하실 수 있습니다.</div>
+            <div class="bubble">안녕하세요! 수원과학대 규정에 대해 무엇이든 물어보세요. 기본은 전체 규정에서 찾아 답변하며, 상단의 '세부 검색'을 켜면 분야를 골라 검색할 수 있습니다.</div>
         </div>
     </div>
 
     <div class="input-area">
         <div class="input-wrapper">
-            <textarea id="userInput" rows="1" maxlength="500" placeholder="질문을 입력하세요... (예: 2027학년도 간호학과 입학정원은?)"
+            <textarea id="userInput" rows="1" maxlength="500" placeholder="질문을 입력하세요... (예: 계절학기는 어떻게 운영되나요?)"
                       onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
             <button class="send-btn" id="sendBtn" onclick="sendMessage()" aria-label="전송">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
@@ -155,14 +159,59 @@
     <script>
         // 백엔드가 같은 주소에서 이 페이지를 제공하면 상대경로, 파일을 직접 열었으면 로컬 서버로 연결
         const API_URL = location.protocol === 'file:' ? 'http://127.0.0.1:8000/api/chat' : '/api/chat';
-        let selectedCategory = null; // null = 전체 (서버가 자동 분류)
+        const GROUPS_URL = API_URL.replace('/api/chat', '/api/groups');
+        // 서버 목록을 못 받았을 때 쓰는 기본값 (app/config.py의 GROUPS와 같게 유지)
+        const FALLBACK_GROUPS = [
+            {id: '1', name: '학교법인'}, {id: '2', name: '학칙'}, {id: '3', name: '위원회'},
+            {id: '4', name: '인사·행정'}, {id: '5', name: '교육과정·학사'}, {id: '6', name: '학생·장학'},
+            {id: '7', name: '부속기관·센터'}, {id: '8', name: '산학협력·연구'}, {id: '9', name: '노사'}
+        ];
+        const selectedGroups = new Set(); // 비어 있으면 전체 검색
+        let detailOn = false;
         let sending = false;
 
-        function setCategory(category, element) {
-            selectedCategory = category;
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-            element.classList.add('active');
+        function renderChips(groups) {
+            const box = document.getElementById('groupChips');
+            box.textContent = '';
+            groups.forEach(g => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'chip';
+                btn.textContent = g.name;
+                btn.onclick = () => {
+                    if (selectedGroups.has(g.id)) selectedGroups.delete(g.id); else selectedGroups.add(g.id);
+                    btn.classList.toggle('active', selectedGroups.has(g.id));
+                    updateHint();
+                };
+                box.appendChild(btn);
+            });
         }
+
+        function updateHint() {
+            const hint = document.getElementById('scopeHint');
+            hint.textContent = (detailOn && selectedGroups.size)
+                ? `선택한 ${selectedGroups.size}개 분야에서 검색합니다`
+                : '전체 규정에서 검색합니다';
+        }
+
+        function toggleDetail(on) {
+            detailOn = on;
+            document.getElementById('groupChips').classList.toggle('open', on);
+            updateHint();
+        }
+
+        async function loadGroups() {
+            let groups = FALLBACK_GROUPS;
+            try {
+                const res = await fetch(GROUPS_URL);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (Array.isArray(data) && data.length) groups = data;
+                }
+            } catch (e) { /* 기본값 사용 */ }
+            renderChips(groups);
+        }
+        loadGroups();
 
         function autoGrow(el) {
             el.style.height = 'auto';
@@ -196,12 +245,14 @@
                 const response = await fetch(API_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: query, category_filter: selectedCategory })
+                    body: JSON.stringify({ query: query, groups: (detailOn && selectedGroups.size) ? [...selectedGroups] : null })
                 });
 
                 if (!response.ok) {
                     const err = await response.json().catch(() => ({}));
-                    throw new Error(typeof err.detail === 'string' ? err.detail : '서버 통신에 실패했습니다.');
+                    const detail = typeof err.detail === 'string' ? err.detail : '서버 통신에 실패했습니다.';
+                    // 어느 주소가 어떤 상태코드를 돌려줬는지 화면에 함께 표시 (원인 파악용)
+                    throw new Error(`${detail} (HTTP ${response.status}, ${API_URL})`);
                 }
 
                 const data = await response.json();

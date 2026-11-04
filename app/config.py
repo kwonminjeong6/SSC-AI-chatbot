@@ -34,11 +34,27 @@ SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", "0.40"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 
-# --- 카테고리 ---
-CATEGORIES = ("학사규정", "장학금")
-# 파일명에 키워드가 포함되면 해당 카테고리로 적재됩니다. (매칭 없으면 DEFAULT_CATEGORY)
-CATEGORY_BY_FILENAME = {"학칙": "학사규정", "장학": "장학금"}
-DEFAULT_CATEGORY = "기타"
+# --- 분야(대분류) ---
+# 파일명 앞의 규정 번호(예: 4-1-8)에서 첫 숫자가 대분류입니다.
+# 화면의 '세부 검색'은 이 번호로 필터하므로, 이름(오른쪽 값)은 바꿔도 검색 동작에는 영향이 없습니다.
+GROUPS = {
+    "1": "학교법인",
+    "2": "학칙",
+    "3": "위원회",
+    "4": "인사·행정",
+    "5": "교육과정·학사",
+    "6": "학생·장학",
+    "7": "부속기관·센터",
+    "8": "산학협력·연구",
+    "9": "노사",
+}
+DEFAULT_CATEGORY = "기타"  # 규정 번호가 없는 파일
 
 # --- 서버 ---
 CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+
+
+# --- 답변 캐시 ---
+CACHE_ENABLED = os.getenv("CACHE_ENABLED", "true").lower() == "true"
+CACHE_TTL = int(os.getenv("CACHE_TTL", "21600"))  # 초 (6시간)
+CACHE_MAX = int(os.getenv("CACHE_MAX", "500"))

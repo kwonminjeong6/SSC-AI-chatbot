@@ -1,21 +1,26 @@
-"""질문 텍스트로 카테고리를 자동 분류합니다."""
+"""'세부 검색'에서 사용자가 고른 분야(대분류 번호)를 검증합니다.
+
+질문 내용으로 분야를 추측하지 않습니다. 사용자가 고르지 않으면 항상 전체 규정에서 검색합니다.
+"""
 from typing import Optional
 
-KEYWORDS: dict[str, tuple[str, ...]] = {
-    "장학금": ("장학", "감면", "면제", "수혜", "다자녀", "소득구간", "분위"),
-    "학사규정": (
-        "휴학", "복학", "학점", "졸업", "학적", "수강", "성적", "출석", "제적", "전과", "편입",
-        "입학정원", "정원", "학과", "교육과정", "학칙", "직제", "부속기관", "개정", "시수",
-    ),
-}
+from app import config
 
 
-def detect_category(query: str) -> Optional[str]:
-    """가장 많은 키워드가 맞은 카테고리를 반환합니다.
+def normalize_groups(requested: Optional[list[str]]) -> Optional[list[str]]:
+    """유효한 분야 번호만 중복 없이 남깁니다.
 
-    매칭이 없거나 동점(예: "휴학하면 장학금은?")이면 None → 전체 검색.
+    비었거나 전부 잘못된 값이면 None(전체 검색). 모든 분야를 고른 경우도 None으로 처리해
+    번호가 없는 문서까지 포함한 전체 검색이 되게 합니다.
     """
-    scores = {cat: sum(kw in query for kw in kws) for cat, kws in KEYWORDS.items()}
-    best = max(scores.values())
-    winners = [cat for cat, score in scores.items() if score == best]
-    return winners[0] if best > 0 and len(winners) == 1 else None
+    if not requested:
+        return None
+    valid = [g for g in dict.fromkeys(str(x).strip() for x in requested) if g in config.GROUPS]
+    if not valid or len(valid) == len(config.GROUPS):
+        return None
+    return valid
+
+
+def list_groups() -> list[dict]:
+    """화면의 선택지로 내려줄 분야 목록 (번호 순)."""
+    return [{"id": gid, "name": name} for gid, name in config.GROUPS.items()]

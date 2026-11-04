@@ -12,7 +12,7 @@ from app import config
 logger = logging.getLogger(__name__)
 
 # 필터/삭제에 쓰는 필드는 인덱스를 만들어 둡니다.
-INDEXED_FIELDS = ("category", "status", "document_name")
+INDEXED_FIELDS = ("category", "group_no", "status", "document_name", "document_id")
 
 
 @lru_cache(maxsize=1)
@@ -61,6 +61,21 @@ def delete_document(document_name: str) -> None:
     )
 
 
+def document_exists(document_name: str, document_id: str) -> bool:
+    """같은 이름·같은 내용(해시)의 문서가 이미 적재되어 있는지 확인합니다 (이어서 적재할 때 사용)."""
+    result = get_client().count(
+        collection_name=config.QDRANT_COLLECTION,
+        count_filter=models.Filter(
+            must=[
+                models.FieldCondition(key="document_name", match=models.MatchValue(value=document_name)),
+                models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id)),
+            ]
+        ),
+        exact=True,
+    )
+    return result.count > 0
+
+
 def upsert_documents(chunks: list[dict], vectors: list[list[float]], batch_size: int = 64) -> int:
     """chunk_id(문자열)를 UUID로 변환해 저장합니다. Qdrant는 정수/UUID ID만 허용합니다."""
     points = [
@@ -87,19 +102,17 @@ def _query(vector: list[float], conditions: list, top_k: int, score_threshold: f
 
 def search_docs(
     query_vector: list[float],
-    category: Optional[str] = None,
+    groups: Optional[list[str]] = None,
     top_k: int = config.TOP_K,
     score_threshold: float = config.SCORE_THRESHOLD,
 ) -> list[dict]:
     """현행(status=current) 청크만 검색하고 payload 전체와 score를 돌려줍니다.
 
-    카테고리 필터 결과가 비면(자동 분류 오판 등) 필터 없이 한 번 더 검색합니다.
+    groups(대분류 번호 목록)가 있으면 그 분야의 규정 안에서만 검색합니다.
+    사용자가 직접 고른 범위이므로 결과가 없어도 범위를 넓혀 다시 검색하지 않습니다.
+    groups가 없으면 전체 규정을 검색합니다.
     """
-    current = models.FieldCondition(key="status", match=models.MatchValue(value="current"))
-    if category:
-        in_category = models.FieldCondition(key="category", match=models.MatchValue(value=category))
-        docs = _query(query_vector, [current, in_category], top_k, score_threshold)
-        if docs:
-            return docs
-        logger.info("카테고리 '%s' 검색 결과 없음 → 전체 검색으로 폴백", category)
-    return _query(query_vector, [current], top_k, score_threshold)
+    conditions = [models.FieldCondition(key="status", match=models.MatchValue(value="current"))]
+    if groups:
+        conditions.append(models.FieldCondition(key="group_no", match=models.MatchAny(any=list(groups))))
+    return _query(query_vector, conditions, top_k, score_threshold)
