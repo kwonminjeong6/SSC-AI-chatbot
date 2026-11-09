@@ -22,13 +22,20 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))  # bge-m3 = 1024
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "qwen/qwen-2.5-7b-instruct")
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "40"))
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))  # 답변이 중간에 잘리지 않도록 넉넉하게
 
 # --- 검색 ---
-TOP_K = int(os.getenv("TOP_K", "4"))
+TOP_K = int(os.getenv("TOP_K", "6"))
 # 코사인 유사도 하한. 이보다 낮은 청크는 "근거 없음"으로 취급합니다.
 # 기본값은 출발점일 뿐이므로 실제 질문으로 시험해 보고 조정하세요.
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", "0.40"))
+
+# 일반 재학생 질문에서는 근거로 쓰지 않을 규정. 규정명에 이 글자가 들어 있으면 제외합니다(쉼표로 구분).
+# 질문에 같은 글자가 들어 있으면(예: "학점은행제 ...") 제외하지 않습니다.
+EXCLUDE_REGULATIONS = [
+    r.strip() for r in os.getenv("EXCLUDE_REGULATIONS", "학점은행").split(",") if r.strip()
+]
 
 # --- 청킹 ---
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))

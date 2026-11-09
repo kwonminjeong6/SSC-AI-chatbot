@@ -1,4 +1,4 @@
-"""(후속 질문 고쳐 쓰기) → 검색 → 프롬프트 구성 → LLM 답변 생성."""
+"""FAQ 확인 → (후속 질문 고쳐 쓰기) → 검색 → 프롬프트 구성 → LLM 답변 생성."""
 import logging
 import re
 from datetime import date
@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi.concurrency import run_in_threadpool
 from openai import AsyncOpenAI
 
-from app import config, embedding
+from app import config, embedding, faq
 from app.cache import answer_cache, make_key
 from app.qdrant import search_docs
 
@@ -28,7 +28,10 @@ RULES = f"""다음 규칙을 반드시 지키십시오:
 6. 문서에 없는 내용은 추측하거나 만들어내지 마십시오.
 7. 문서에서 질문의 근거를 전혀 찾을 수 없을 때만 정확히 다음 문장으로 답하십시오: "{NO_ANSWER}"
 8. 학생과 교직원이 이해하기 쉽게 간결하고 명확하게 답하십시오.
-9. 반드시 한국어로만 답하십시오. 중국어·영어 등 다른 언어를 섞지 마십시오. 질문에 대한 답이 끝나면 바로 멈추고, 새로운 질문이나 보기(A, B, C 등), 해설을 만들어 덧붙이지 마십시오."""
+9. 반드시 한국어로만 답하십시오. 중국어·영어 등 다른 언어를 섞지 마십시오. 질문에 대한 답이 끝나면 바로 멈추고, 새로운 질문이나 보기(A, B, C 등), 해설을 만들어 덧붙이지 마십시오.
+10. 질문에 없는 조건(수업연한 2·3·4년제, 입학 연도, 학년 등)을 마음대로 가정하지 마십시오. 조건에 따라 답이 달라지면 하나만 고르지 말고 조건별로 나누어 모두 알려 주십시오.
+11. 질문에 '전공심화', '학점은행제', '편입학' 등이 없으면 일반 재학생(일반과정) 기준으로 답하십시오. 같은 표 안에 다른 과정의 줄(예: 학사학위 전공심화과정, 전적대학교 합산)이 섞여 있어도 그 숫자를 일반 재학생의 답으로 쓰지 마십시오.
+12. 숫자(학점·횟수·기간·금액)는 검색된 문서에 적힌 그대로만 쓰십시오. 문서에 적힌 값과 다르게 계산하거나 바꾸지 마십시오."""
 
 REWRITE_SYSTEM = "너는 대화의 마지막 질문을 검색용 질문으로 고쳐 쓰는 도우미다."
 REWRITE_PROMPT = """아래 대화를 참고해서 '마지막 질문'을 앞 대화 없이도 이해되는 하나의 완결된 질문으로 고쳐 쓰십시오.
@@ -52,6 +55,7 @@ SHORT_QUERY_LEN = 15  # 공백을 뺀 글자 수
 # 한국어 답변 사이에 한자(중국어)가 2글자 이상 이어지면 모델이 이탈한 것으로 봅니다.
 HAN_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
 MIN_ANSWER_LEN = 10
+EXTRA_FETCH = 4  # 제외 규정을 걸러낸 뒤에도 TOP_K개가 남도록 더 가져오는 개수
 
 
 @lru_cache(maxsize=1)
@@ -63,14 +67,25 @@ def get_llm() -> AsyncOpenAI:
     )
 
 
-def retrieve(query: str, groups: Optional[list[str]] = None) -> list[dict]:
-    """질문을 임베딩해 현행 규정 청크를 검색합니다(동기 함수, 스레드풀에서 호출)."""
-    return search_docs(embedding.encode(query), groups=groups)
-
-
 def doc_title(doc: dict) -> str:
     """사람이 읽는 규정 이름. 규정명이 없으면 파일명을 씁니다."""
     return doc.get("regulation_name") or doc.get("document_name") or "알 수 없음"
+
+
+def is_excluded(doc: dict, query: str) -> bool:
+    """일반 재학생 질문에서 근거로 쓰지 않을 규정인지 확인합니다. 질문에 그 규정을 가리키는 말이 있으면 제외하지 않습니다."""
+    title = doc_title(doc)
+    return any(name in title and name not in query for name in config.EXCLUDE_REGULATIONS)
+
+
+def retrieve(query: str, groups: Optional[list[str]] = None) -> list[dict]:
+    """질문을 임베딩해 현행 규정 청크를 검색합니다(동기 함수, 스레드풀에서 호출)."""
+    extra = EXTRA_FETCH if config.EXCLUDE_REGULATIONS else 0
+    docs = search_docs(embedding.encode(query), groups=groups, top_k=config.TOP_K + extra)
+    kept = [d for d in docs if not is_excluded(d, query)]
+    if len(kept) != len(docs):
+        logger.info("제외 규정 %d건을 걸러냈습니다", len(docs) - len(kept))
+    return kept[: config.TOP_K]
 
 
 def format_context(docs: list[dict]) -> str:
@@ -161,10 +176,34 @@ async def rewrite_query(query: str, history: Optional[list[dict]]) -> str:
         return query
 
 
+async def call_llm(prompt: str) -> tuple[str, str]:
+    """(답변 본문, 종료 사유)를 돌려줍니다. 종료 사유가 'length'이면 토큰 한도에 걸려 잘린 것입니다."""
+    response = await get_llm().chat.completions.create(
+        model=config.MODEL_NAME,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=config.LLM_MAX_TOKENS,
+    )
+    choice = response.choices[0]
+    return (choice.message.content or "").strip(), (choice.finish_reason or "")
+
+
 async def generate_rag_answer(
     query: str, groups: Optional[list[str]] = None, history: Optional[list[dict]] = None
 ) -> dict:
+    # 1) 검증된 FAQ 답변이 있으면 AI 없이 바로 돌려줍니다.
+    hit = faq.match(query)
+    if hit:
+        return hit
+
     standalone = await rewrite_query(query, history)
+    if standalone != query:
+        hit = faq.match(standalone)
+        if hit:
+            return hit
 
     key = make_key(standalone, groups)
     if config.CACHE_ENABLED:  # 같은 질문이면 검색·LLM 호출 없이 바로 답변
@@ -179,16 +218,14 @@ async def generate_rag_answer(
         return {"answer": NO_ANSWER, "sources": []}  # LLM 비용이 없으므로 캐시하지 않음
 
     try:
-        response = await get_llm().chat.completions.create(
-            model=config.MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": create_prompt(standalone, docs)},
-            ],
-            temperature=0.0,
-            max_tokens=512,
-        )
-        answer = clean_answer((response.choices[0].message.content or "").strip())
+        prompt = create_prompt(standalone, docs)
+        raw, finish = await call_llm(prompt)
+        if HAN_RUN.search(raw):  # 중국어로 이탈했으면 한 번 더 생성해 봅니다.
+            logger.warning("중국어 이탈 감지 — 한 번 다시 생성합니다")
+            raw, finish = await call_llm(prompt)
+        if finish == "length":
+            logger.warning("답변이 토큰 한도(%d)에서 끊겼습니다", config.LLM_MAX_TOKENS)
+        answer = clean_answer(raw)
         if len(answer) < MIN_ANSWER_LEN:
             raise ValueError("LLM 응답이 비었거나 너무 짧습니다.")
     except Exception:
@@ -197,6 +234,6 @@ async def generate_rag_answer(
 
     sources = [] if NO_ANSWER in answer else format_sources(docs)
     result = {"answer": answer, "sources": sources}
-    if config.CACHE_ENABLED:  # 성공한 답만 저장
+    if config.CACHE_ENABLED and finish != "length":  # 성공한 완결 답만 저장
         answer_cache.set(key, result)
     return result

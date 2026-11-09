@@ -9,7 +9,8 @@
 ## 폴더 구조
 - `app/config.py` 설정과 분야(GROUPS) 정의 · `app/ingest.py` PDF → 청크 → 임베딩 → 적재
 - `app/qdrant.py` 저장/검색 · `app/category.py` 분야 검증 · `app/rag.py` 프롬프트·답변 · `app/main.py` API
-- `frontend/index.html` 채팅 화면 · `evaluation/` 품질 평가 · `tests/` 단위 테스트 · `tools/make_qr.py` QR 생성
+- `frontend/index.html` 채팅 화면 
+
 
 ## 파일명 규칙 → 분야
 파일명은 `A-B-C 규정명.pdf` 형식입니다. **A가 분야(대분류)**, B는 세부 묶음(`subgroup_no`로 저장), C는 일련번호입니다.
@@ -32,9 +33,7 @@ cp .env.example .env            # 키 입력
 python -m app.ingest --reset --limit 5     # 먼저 5개로 시험 (--reset은 기존 데이터를 모두 지움)
 python -m app.ingest --skip-existing       # 전체 적재 (중단돼도 같은 명령으로 이어서)
 uvicorn app.main:app --reload              # http://127.0.0.1:8000
-python -m evaluation.run_eval              # 검색 평가 (--answer: LLM 답변까지)
-python -m evaluation.tune_threshold        # SCORE_THRESHOLD 제안
-pytest -q
+
 ```
 적재 옵션: `--dir 폴더`, `--group 1~9`(폴더 전체를 한 분야로), `--skip-existing`, `--limit N`, `--include-abolished`, `--reset`.
 같은 파일명을 다시 적재하면 기존 청크를 지우고 새로 넣습니다. 한 파일이 실패해도 나머지는 계속되며, 끝에 요약과 분야별 문서 수가 출력됩니다.
@@ -48,6 +47,5 @@ pytest -q
 Qdrant에 적재만 다시 하면 서버는 재배포 없이 새 내용을 사용합니다. 코드·화면을 바꾼 경우에만 이미지를 다시 빌드해 같은 Cloud Run 서비스에 배포하세요(URL·QR 유지).
 
 ## 알려진 한계
-- 실제 규정 PDF 225개의 파싱 품질은 적재 후 `evaluation/run_eval`로 확인해야 합니다. `questions.json`은 파일명 기준 초안이므로 실제 규정명에 맞게 고쳐 쓰세요.
 - 스캔(이미지) PDF는 텍스트가 없어 "내용 없음"으로 건너뜁니다.
 - `SCORE_THRESHOLD`(기본 0.40)는 초기값입니다. 튜닝 스크립트로 조정하세요.
