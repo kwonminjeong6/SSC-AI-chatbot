@@ -33,43 +33,53 @@ ATTENDANCE_SCORES = {
 }
 
 
-def _attendance_table_lines() -> str:
-    lines = []
-    for weekly, points in ATTENDANCE_SCORES.items():
-        detail = ", ".join(f"{i}시간 {p}점" for i, p in enumerate(points))
-        lines.append(f"- 주 {weekly}시간 수업(학기 {weekly * 15}시수): 결석 {detail}, {len(points)}시간 이상 0점")
-    return "\n".join(lines)
+def _attendance_weekly(query: str) -> Optional[int]:
+    """질문에 '주 3시간'처럼 주당 수업 시수가 있으면 그 숫자를 돌려줍니다."""
+    found = re.search(r"주(?:당)?(\d)(?:시간|시수)", "".join(query.split()))
+    if found and int(found.group(1)) in ATTENDANCE_SCORES:
+        return int(found.group(1))
+    return None
 
 
 def _attendance_exact(query: str) -> str:
     """질문에 주당 시수와 결석 시간이 모두 있으면 해당 점수를 계산해 한 줄로 알려 줍니다."""
     text = "".join(query.split())
-    weekly = re.search(r"주(?:당)?(\d)(?:시간|시수)", text)
+    weekly = _attendance_weekly(query)
     absent = re.search(r"(\d{1,2})(?:시간|시수|회|번)(?:을|이|를)?(?:결석|빠|못)", text) or re.search(
         r"결석(?:을|이|은|는)?(\d{1,2})(?:시간|시수|회|번)", text
     )
     if not weekly or not absent:
         return ""
-    w, m = int(weekly.group(1)), int(absent.group(1))
-    points = ATTENDANCE_SCORES.get(w)
-    if not points:
-        return ""
+    m = int(absent.group(1))
+    points = ATTENDANCE_SCORES[weekly]
     score = points[m] if m < len(points) else 0
-    return f"주 {w}시간 수업에서 결석이 {m}시간이면 출석점수는 {score}점입니다(20점 만점).\n\n"
+    return f"주 {weekly}시간 수업에서 결석이 {m}시간이면 출석점수는 {score}점입니다(20점 만점).\n\n"
 
 
-ATTENDANCE_ANSWER = (
-    "출결은 '몇 번'이 아니라 시간(시수) 단위로 계산하고, 규정에 '결석 몇 번이면 F'라는 문장은 없습니다. "
-    "관련 기준은 다음과 같습니다.\n\n"
-    "1) 출석성적은 20점 만점이며, 결석시수에 따라 아래처럼 점수가 정해집니다(교무학사 관리 규정 제15조 ④).\n"
-    + _attendance_table_lines()
-    + "\n\n2) 지각·조퇴는 3회마다 결석 1시수로 계산하고, 1~2회는 감점이 없습니다. "
-    "수업 시작 10분 이내 입실은 출석, 10분 이후는 지각, 20분 이후는 결석입니다. "
-    "수업 종료 10분 이전 퇴실은 조퇴, 20분 이전 퇴실은 결석입니다(제15조 ⑤).\n\n"
-    "3) 총 수업시간의 1/4을 초과해 결석하면 해당 과목 시험에 응시할 수 없고(학칙 제26조 ②), "
-    "성적을 부여할 수 없습니다(교무학사 관리 규정 제17조 ①). "
-    "이 경우 F 처리 여부는 규정에 따로 적혀 있지 않으니 학적과에 확인하세요."
-)
+def _attendance_answer(query: str) -> str:
+    """결석 질문의 답변. 길지 않게 핵심만 보여 주고, 수업 시수를 말한 경우에만 그 점수표를 붙입니다."""
+    parts = [_attendance_exact(query)]
+    parts.append(
+        "규정에 '결석 몇 번이면 F'라는 문장은 없고, 결석은 횟수가 아니라 시간(시수) 단위로 계산합니다.\n"
+        "- 총 수업시간의 1/4을 초과해 결석하면 시험에 응시할 수 없고(학칙 제26조 ②) 성적을 부여할 수 없습니다"
+        "(교무학사 관리 규정 제17조 ①). F 처리 여부는 규정에 적혀 있지 않으니 학적과에 확인하세요.\n"
+        "- 1/4을 초과하는 결석 시간은 주 1시간 수업 4시간, 주 2시간 8시간, 주 3시간 12시간, "
+        "주 4시간 16시간, 주 5시간 19시간, 주 6시간 23시간부터입니다(한 학기 15주 기준, 총 수업시간의 1/4을 계산한 값).\n"
+        "- 지각·조퇴는 3회가 결석 1시간입니다(제15조 ⑤)."
+    )
+    weekly = _attendance_weekly(query)
+    if weekly:
+        points = ATTENDANCE_SCORES[weekly]
+        detail = ", ".join(f"{i}시간 {p}점" for i, p in enumerate(points))
+        parts.append(
+            f"\n- 출석점수(20점 만점, 제15조 ④) 주 {weekly}시간 수업: 결석 {detail}, {len(points)}시간 이상 0점"
+        )
+    else:
+        parts.append(
+            "\n- 출석점수는 20점 만점이고 결석 시간에 따라 줄어듭니다(제15조 ④). "
+            "정확한 점수는 '주 3시간 수업인데 4시간 결석하면 출석점수는?'처럼 수업 시간과 결석 시간을 함께 물어보세요."
+        )
+    return "".join(parts)
 
 
 FAQ = [
@@ -108,7 +118,7 @@ FAQ = [
             ["몇", "기준", "점수", "감점", "f", "시험", "응시", "한도", "처리", "0점", "어떻게"],
         ],
         "exclude": ["인정", "공결", "경조사", "학점은행", "대리", "부정", "장학", "등록금", "휴학", "복학", "입영", "재수강", "학사경고"],
-        "answer_fn": lambda q: _attendance_exact(q) + ATTENDANCE_ANSWER,
+        "answer_fn": _attendance_answer,
         "sources": ["교무학사 관리 규정 제15조 ④·⑤", "교무학사 관리 규정 제17조 ①", "학칙 제26조 ②"],
     },
     {
